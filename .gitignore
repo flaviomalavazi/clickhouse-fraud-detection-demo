@@ -1,0 +1,37 @@
+# Environment
+.env
+.env.*
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.egg-info/
+dist/
+build/
+
+# Model artifacts
+*.pkl
+
+# UDF deployment artifacts
+*.zip
+
+# Generated files
+udf.html
+
+# macOS
+.DS_Store
+.localized
+
+# IDE
+.idea/
+.vscode/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Claude Code
+.claude*
