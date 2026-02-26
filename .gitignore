@@ -19,8 +19,6 @@ build/
 # UDF deployment artifacts
 *.zip
 
-# Generated files
-udf.html
 
 # macOS
 .DS_Store

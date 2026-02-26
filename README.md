@@ -18,7 +18,7 @@ fraud.transactions
         │
         ├──► mv_user_stats ──► fraud.user_stats (per-user baselines)
         │
-        └──► mv_ml_alerts  ──► fraud.alerts_live
+        └──► mv_score_transactions  ──► fraud.transactions_scored  (score < 0 = alert)
                   │
                   └── calls fraud_score() UDF (03_udf_scorer.py)
                             │
@@ -40,8 +40,8 @@ Creates all tables and Materialized Views:
 | `fraud.transactions` | Table (MergeTree) | Raw transaction stream |
 | `fraud.user_stats` | Table (AggregatingMergeTree) | Per-user average amount baselines |
 | `fraud.mv_user_stats` | Materialized View | Incrementally maintains `user_stats` on every insert |
-| `fraud.alerts_live` | Table (MergeTree) | ML anomaly alerts written by the scoring MV |
-| `fraud.mv_ml_alerts` | Materialized View | Calls the `fraud_score` UDF on every insert, writes anomalies to `alerts_live` |
+| `fraud.transactions_scored` | Table (MergeTree) | All scored transactions with their anomaly score — filter `score < 0` for alerts |
+| `fraud.mv_score_transactions` | Materialized View | Calls the `fraud_score` UDF on every insert, writes all scored rows to `transactions_scored` |
 
 Apply once to ClickHouse Cloud before running anything else.
 
@@ -55,6 +55,7 @@ Each row contains:
 
 | Field | Description |
 |---|---|
+| `transaction_id` | Random UUID generated server-side via `generateUUIDv4()` |
 | `ts` | Timestamp (now minus up to 60s random offset) |
 | `user_id` | Random user ID (1–100,000) |
 | `amount` | 98% normal ($5–$250), 2% suspicious ($1,500–$5,000) |
@@ -84,7 +85,7 @@ The executable UDF that ClickHouse calls to score transactions. It is **not run 
 - Scores the entire chunk in one vectorized `decision_function` call
 - Outputs one `Float64` anomaly score per row to stdout
 
-`mv_ml_alerts` calls `fraud_score()` on every insert into `fraud.transactions`, pre-filtered to `amount > 200`. Rows where `score < 0` are written to `fraud.alerts_live` with a severity label:
+`mv_score_transactions` calls `fraud_score()` on every insert into `fraud.transactions`. All scored rows are written to `fraud.transactions_scored`; the dashboard filters `score < 0` at query time to show alerts. Severity label is populated for anomalies only:
 
 | Severity | Score threshold |
 |---|---|
@@ -101,7 +102,7 @@ Live dashboard (auto-refreshes every 15 seconds):
 
 - **KPIs**: total transactions, transactions/5 min, ML alerts/5 min, fraud rate
 - **Charts**: transactions per minute, ML alerts per minute, alerts by country, alert severity breakdown
-- **Alert table**: last 30 ML alerts from `fraud.alerts_live`, color-coded by severity
+- **Alert table**: last 30 ML alerts from `fraud.transactions_scored WHERE score < 0`, color-coded by severity
 
 ---
 
@@ -137,7 +138,7 @@ python 02_train_model.py
 streamlit run 04_dashboard.py
 ```
 
-> `03_udf_scorer.py` is deployed to ClickHouse as an executable UDF — ClickHouse calls it automatically on each insert via `mv_ml_alerts`. It does not need to be run manually.
+> `03_udf_scorer.py` is deployed to ClickHouse as an executable UDF — ClickHouse calls it automatically on each insert via `mv_score_transactions`. It does not need to be run manually.
 
 # Contributors
 [Oussama Chakri](https://github.com/Ochakri-CHDB) is the original creator of this demo

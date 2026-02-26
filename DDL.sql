@@ -4,12 +4,13 @@ CREATE DATABASE IF NOT EXISTS fraud;
 -- Main transaction stream
 CREATE TABLE IF NOT EXISTS fraud.transactions
 (
-    ts         DateTime,
-    user_id    UInt32,
-    amount     Float32,
-    country    String,
-    channel    String,
-    is_anomaly UInt8
+    transaction_id UUID,
+    ts             DateTime,
+    user_id        UInt32,
+    amount         Float32,
+    country        String,
+    channel        String,
+    is_anomaly     UInt8
 )
 ENGINE = MergeTree
 ORDER BY (ts, user_id);
@@ -20,7 +21,7 @@ ORDER BY (ts, user_id);
 -- The scoring MV JOINs against this to compute user_amount_mean
 -- and user_amount_ratio without scanning the full transactions table.
 --
--- Note: because mv_user_stats and mv_ml_alerts both fire on the same
+-- Note: because mv_user_stats and mv_score_transactions both fire on the same
 -- insert batch, the stats here always reflect *prior* history —
 -- the current batch is not included in the user mean yet. This is
 -- the correct semantics for anomaly detection.
@@ -45,20 +46,21 @@ FROM fraud.transactions
 GROUP BY user_id;
 
 -- ======================================================
--- alerts_live: target table for the UDF-based ML scoring MV.
--- Kept separate from fraud.alerts (populated by the Python polling
--- loop in 03) so both demo approaches can run side by side.
+-- transactions_scored: stores every transaction that passed through
+-- the IsolationForest UDF with its raw anomaly score.
+-- Query with WHERE score < 0 to isolate fraud alerts.
 -- ======================================================
-CREATE TABLE IF NOT EXISTS fraud.alerts_live
+CREATE TABLE IF NOT EXISTS fraud.transactions_scored
 (
-    ts         DateTime,
-    user_id    UInt32,
-    amount     Float32,
-    country    String,
-    channel    String,
-    score      Float32,
-    model      String,
-    reason     String
+    transaction_id UUID,
+    ts             DateTime,
+    user_id        UInt32,
+    amount         Float32,
+    country        String,
+    channel        String,
+    score          Float32,
+    model          String,
+    reason         String
 )
 ENGINE = MergeTree
 ORDER BY (ts, user_id);
@@ -68,21 +70,20 @@ ORDER BY (ts, user_id);
 --
 -- Fires on every insert into fraud.transactions.
 -- Joins with fraud.user_stats to get per-user baselines.
--- Pre-filters to amount > 200 before calling the UDF to limit
--- subprocess I/O — adjust this threshold based on your throughput.
--- Only rows where the model returns score < 0 (anomalies) are
--- written to fraud.alerts_live.
+-- Writes ALL scored rows to fraud.transactions_scored.
+-- Filter on score < 0 at query time to isolate alerts.
 --
 -- Category encodings (alphabetical — must match pandas cat.codes
 -- used in train_model.py):
 --   country: DE=0, ES=1, FR=2, IT=3, US=4
 --   channel: agency=0, call_center=1, mobile=2, web=3
 -- ======================================================
-DROP VIEW IF EXISTS fraud.mv_ml_alerts;
+DROP VIEW IF EXISTS fraud.mv_score_transactions;
 
-CREATE MATERIALIZED VIEW fraud.mv_ml_alerts
-TO fraud.alerts_live AS
+CREATE MATERIALIZED VIEW fraud.mv_score_transactions
+TO fraud.transactions_scored AS
 SELECT
+    transaction_id,
     ts,
     user_id,
     amount,
@@ -91,6 +92,7 @@ SELECT
     toFloat32(score) AS score,
     'IsolationForest(amount,user,country,channel)' AS model,
     multiIf(
+        score >= 0,      '',
         score <= -0.015, 'CRITICAL: Strongly isolated by the model',
         score <= -0.010, 'HIGH: Highly anomalous transaction pattern',
         score <= -0.005, 'MEDIUM: Moderately unusual transaction',
@@ -98,6 +100,7 @@ SELECT
     ) AS reason
 FROM (
     SELECT
+        t.transaction_id,
         t.ts,
         t.user_id,
         t.amount,
@@ -117,6 +120,4 @@ FROM (
         FROM fraud.user_stats
         GROUP BY user_id
     ) AS us ON t.user_id = us.user_id
-    WHERE t.amount > 200
-)
-WHERE score < 0;
+);

@@ -51,6 +51,7 @@ def insert_batch(client, batch_size: int):
     insert_sql = f"""
         INSERT INTO {DATABASE}.{TABLE}
         SELECT
+            generateUUIDv4()                           AS transaction_id,
             now() - INTERVAL randCanonical() * 60 SECOND AS ts,
             toUInt32(1 + randCanonical() * 100000)     AS user_id,
             -- 98% normal amounts, 2% suspiciously high
@@ -75,15 +76,19 @@ def main():
     print(f"Starting ingestion into fraud.transactions ({batch_size} rows per batch)...")
     try:
         while True:
-            actual = random.randint(int(batch_size * 0.75), int(batch_size * 1.25))
-            start = time.time()
-            insert_batch(client, actual)
-            elapsed = time.time() - start
-            print(f"Inserted {actual} rows in {elapsed:.3f} seconds")
-            # Try to keep total rate around one batch per second
-            sleep_time = max(0.0, 1.0 - elapsed)
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+            try:
+                actual = random.randint(int(batch_size * 0.75), int(batch_size * 1.25))
+                start = time.time()
+                insert_batch(client, actual)
+                elapsed = time.time() - start
+                print(f"Inserted {actual} rows in {elapsed:.3f} seconds")
+                # Try to keep total rate around one batch per second
+                sleep_time = max(0.0, 1.0 - elapsed)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+            except Exception as e:
+                print(f"Error during ingestion: {e}, waiting for 5 seconds to resume")
+                time.sleep(5)  # Wait before retrying
     except KeyboardInterrupt:
         print("Ingestion stopped by user.")
 

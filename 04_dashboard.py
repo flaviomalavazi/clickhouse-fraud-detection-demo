@@ -214,11 +214,11 @@ def load_kpis() -> dict:
     c = get_client()
     row = c.query("""
         SELECT
-            (SELECT count() FROM fraud.transactions WHERE ts >= now() - INTERVAL 5 MINUTE) AS tx_5m,
-            (SELECT count() FROM fraud.alerts_live  WHERE ts >= now() - INTERVAL 5 MINUTE) AS ml_5m,
-            (SELECT count() FROM fraud.transactions)                                         AS total_tx,
-            (SELECT count() FROM fraud.alerts_live)                                          AS total_ml,
-            (SELECT avg(amount) FROM fraud.alerts_live WHERE ts >= now() - INTERVAL 1 HOUR) AS avg_amt
+            (SELECT count() FROM fraud.transactions          WHERE ts >= now() - INTERVAL 5 MINUTE)            AS tx_5m,
+            (SELECT count() FROM fraud.transactions_scored   WHERE ts >= now() - INTERVAL 5 MINUTE AND score < 0) AS ml_5m,
+            (SELECT count() FROM fraud.transactions)                                                             AS total_tx,
+            (SELECT count() FROM fraud.transactions_scored   WHERE score < 0)                                    AS total_ml,
+            (SELECT avg(amount) FROM fraud.transactions_scored WHERE ts >= now() - INTERVAL 1 HOUR AND score < 0) AS avg_amt
     """).result_rows[0]
     return {
         "tx_5m":    row[0], "ml_5m":   row[1],
@@ -238,8 +238,8 @@ def load_tx_per_minute(minutes: int = 30) -> pd.DataFrame:
 def load_alerts_per_minute(minutes: int = 30) -> pd.DataFrame:
     return get_client().query_df(f"""
         SELECT toStartOfMinute(ts) AS minute, count() AS ml_alerts
-        FROM fraud.alerts_live
-        WHERE ts >= now() - INTERVAL {minutes} MINUTE
+        FROM fraud.transactions_scored
+        WHERE ts >= now() - INTERVAL {minutes} MINUTE AND score < 0
         GROUP BY minute ORDER BY minute
     """)
 
@@ -247,8 +247,8 @@ def load_alerts_per_minute(minutes: int = 30) -> pd.DataFrame:
 def load_alerts_by_country() -> pd.DataFrame:
     return get_client().query_df("""
         SELECT country, count() AS alerts
-        FROM fraud.alerts_live
-        WHERE ts >= now() - INTERVAL 1 HOUR
+        FROM fraud.transactions_scored
+        WHERE ts >= now() - INTERVAL 1 HOUR AND score < 0
         GROUP BY country ORDER BY alerts DESC
     """)
 
@@ -259,8 +259,8 @@ def load_severity_dist() -> pd.DataFrame:
             multiIf(score <= -0.015,'CRITICAL', score <= -0.010,'HIGH',
                     score <= -0.005,'MEDIUM', 'LOW') AS severity,
             count() AS n
-        FROM fraud.alerts_live
-        WHERE ts >= now() - INTERVAL 1 HOUR
+        FROM fraud.transactions_scored
+        WHERE ts >= now() - INTERVAL 1 HOUR AND score < 0
         GROUP BY severity
     """)
     order = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
@@ -271,7 +271,9 @@ def load_severity_dist() -> pd.DataFrame:
 def load_recent_ml_alerts(limit: int = 30) -> pd.DataFrame:
     return get_client().query_df(f"""
         SELECT ts, user_id, amount, country, channel, round(score, 4) AS score, reason
-        FROM fraud.alerts_live ORDER BY ts DESC LIMIT {limit}
+        FROM fraud.transactions_scored
+        WHERE score < 0
+        ORDER BY ts DESC LIMIT {limit}
     """)
 
 
