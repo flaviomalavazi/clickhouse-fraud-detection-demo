@@ -1,0 +1,26 @@
+[project]
+name = "clickhouse-fraud-detection-demo"
+version = "0.1.0"
+description = "Real-time fraud detection demo on ClickHouse Cloud: synthetic ingestion, an IsolationForest executable UDF, and a Streamlit dashboard."
+readme = "README.md"
+# Pinned to 3.11 because that is the Python the ClickHouse UDF host runs:
+# 02_train_model.py pins the bundle's requirements.txt to whatever versions
+# trained the pickle, and those pins have to be installable on the host.
+requires-python = ">=3.11,<3.12"
+# Upper bounds keep the demo on the major versions it was written against
+# (notably pandas 2.x and clickhouse-connect 0.x); uv.lock pins exact versions.
+dependencies = [
+    "altair>=6.0.0,<7",
+    "clickhouse-connect>=0.11.0,<1",
+    "numpy>=2.4.2,<3",
+    "pandas>=2.3.3,<3",
+    "python-dotenv>=1.0.1,<2",
+    "scikit-learn>=1.8.0,<2",
+    "streamlit>=1.54.0,<2",
+    "streamlit-autorefresh>=1.0.1,<2",
+]
+
+# The repo is a set of standalone scripts, not an installable package, so uv
+# only manages the environment and never tries to build this project.
+[tool.uv]
+package = false

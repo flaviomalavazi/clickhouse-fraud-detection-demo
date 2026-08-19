@@ -1,11 +1,15 @@
 import os
+import pathlib
 import random
 import sys
 import time
 import clickhouse_connect
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load the .env next to this script, and let it win over any pre-existing
+# shell variables (override=True) so a stray CLICKHOUSE_* export in the
+# environment can't silently redirect the demo at another database.
+load_dotenv(dotenv_path=pathlib.Path(__file__).parent / ".env", override=True)
 
 # -----------------------------------------
 # ClickHouse Cloud connection settings
@@ -31,7 +35,6 @@ def get_client():
         password=PASSWORD,
         database=DATABASE,
         secure=True,
-        verify=False,
     )
     client.ping()
     return client
@@ -73,7 +76,7 @@ def insert_batch(client, batch_size: int):
 def main():
     batch_size = int(sys.argv[1]) if len(sys.argv) > 1 else 60000
     client = get_client()
-    print(f"Starting ingestion into fraud.transactions ({batch_size} rows per batch)...")
+    print(f"Starting ingestion into {DATABASE}.{TABLE} ({batch_size} rows per batch)...")
     try:
         while True:
             try:
