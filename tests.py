@@ -7,11 +7,15 @@ Usage:
 """
 
 import os
+import pathlib
 import sys
 import clickhouse_connect
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load the .env next to this script, and let it win over any pre-existing
+# shell variables (override=True) so a stray CLICKHOUSE_* export in the
+# environment can't silently redirect the demo at another database.
+load_dotenv(dotenv_path=pathlib.Path(__file__).parent / ".env", override=True)
 
 CLICKHOUSE_HOST = os.environ["CLICKHOUSE_HOST"]
 CLICKHOUSE_PORT = int(os.environ.get("CLICKHOUSE_PORT", "8443"))
@@ -28,7 +32,6 @@ def get_client():
         password=PASSWORD,
         database=DATABASE,
         secure=True,
-        verify=False,
     )
 
 

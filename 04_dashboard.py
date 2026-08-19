@@ -5,6 +5,7 @@ ClickHouse Cloud · IsolationForest UDF · Materialized Views
 """
 
 import os
+import pathlib
 import pandas as pd
 import altair as alt
 import streamlit as st
@@ -12,7 +13,10 @@ import clickhouse_connect
 from dotenv import load_dotenv
 from streamlit_autorefresh import st_autorefresh
 
-load_dotenv()
+# Load the .env next to this script, and let it win over any pre-existing
+# shell variables (override=True) so a stray CLICKHOUSE_* export in the
+# environment can't silently redirect the demo at another database.
+load_dotenv(dotenv_path=pathlib.Path(__file__).parent / ".env", override=True)
 
 CLICKHOUSE_HOST = os.environ["CLICKHOUSE_HOST"]
 CLICKHOUSE_PORT = int(os.environ.get("CLICKHOUSE_PORT", "8443"))
@@ -196,6 +200,21 @@ div[data-testid="stDataFrame"] {{
 
 @st.cache_resource
 def get_client():
+    """
+    One ClickHouse client shared by every browser session (that is what
+    st.cache_resource means) and therefore used from several script-runner
+    threads at once.
+
+    clickhouse-connect assigns each client a session_id by default and refuses
+    to run two queries on the same session concurrently, raising
+    "Attempt to execute concurrent queries within the same session". That fires
+    whenever runs overlap: a second browser tab, or an auto-refresh rerun
+    starting while the previous run's query is still in flight.
+
+    This dashboard only issues independent read-only queries — no temp tables,
+    no SET statements, nothing that needs session continuity — so the session is
+    pure overhead. Turning it off makes concurrent use safe.
+    """
     c = clickhouse_connect.get_client(
         host=CLICKHOUSE_HOST,
         port=CLICKHOUSE_PORT,
@@ -203,13 +222,14 @@ def get_client():
         password=PASSWORD,
         database=DATABASE,
         secure=True,
-        verify=False,
+        autogenerate_session_id=False,
     )
     c.ping()
     return c
 
 # ── Queries ───────────────────────────────────────────────────────────────────
 
+@st.cache_data(ttl="10s", show_spinner=False)
 def load_kpis() -> dict:
     c = get_client()
     row = c.query("""
@@ -226,24 +246,27 @@ def load_kpis() -> dict:
     }
 
 
+@st.cache_data(ttl="10s", show_spinner=False)
 def load_tx_per_minute(minutes: int = 30) -> pd.DataFrame:
     return get_client().query_df(f"""
-        SELECT toStartOfMinute(ts) AS minute, count() AS tx_count
+        SELECT toStartOfInterval(ts, INTERVAL 15 seconds) AS fifteen_sec_window, count() AS tx_count
         FROM fraud.transactions
         WHERE ts >= now() - INTERVAL {minutes} MINUTE
-        GROUP BY minute ORDER BY minute
+        GROUP BY fifteen_sec_window ORDER BY fifteen_sec_window
     """)
 
 
+@st.cache_data(ttl="10s", show_spinner=False)
 def load_alerts_per_minute(minutes: int = 30) -> pd.DataFrame:
     return get_client().query_df(f"""
-        SELECT toStartOfMinute(ts) AS minute, count() AS ml_alerts
+        SELECT toStartOfInterval(ts, INTERVAL 15 seconds) AS fifteen_sec_window, count() AS ml_alerts
         FROM fraud.transactions_scored
         WHERE ts >= now() - INTERVAL {minutes} MINUTE AND score < 0
-        GROUP BY minute ORDER BY minute
+        GROUP BY fifteen_sec_window ORDER BY fifteen_sec_window
     """)
 
 
+@st.cache_data(ttl="10s", show_spinner=False)
 def load_alerts_by_country() -> pd.DataFrame:
     return get_client().query_df("""
         SELECT country, count() AS alerts
@@ -253,6 +276,7 @@ def load_alerts_by_country() -> pd.DataFrame:
     """)
 
 
+@st.cache_data(ttl="10s", show_spinner=False)
 def load_severity_dist() -> pd.DataFrame:
     df = get_client().query_df("""
         SELECT
@@ -268,6 +292,7 @@ def load_severity_dist() -> pd.DataFrame:
     return df.sort_values("severity")
 
 
+@st.cache_data(ttl="10s", show_spinner=False)
 def load_recent_ml_alerts(limit: int = 30) -> pd.DataFrame:
     return get_client().query_df(f"""
         SELECT ts, user_id, amount, country, channel, round(score, 4) AS score, reason
@@ -280,8 +305,8 @@ def load_recent_ml_alerts(limit: int = 30) -> pd.DataFrame:
 # ── Charts ────────────────────────────────────────────────────────────────────
 
 def chart_tx(df: pd.DataFrame) -> alt.Chart:
-    base = alt.Chart(df if not df.empty else pd.DataFrame({"minute": [], "tx_count": []}),
-                     title="Transactions per minute")
+    base = alt.Chart(df if not df.empty else pd.DataFrame({"fifteen_sec_window": [], "tx_count": []}),
+                     title="Transactions per fifteen second window")
     area = base.mark_area(
         line={"color": CH_YELLOW, "strokeWidth": 2},
         color=alt.Gradient(
@@ -291,9 +316,9 @@ def chart_tx(df: pd.DataFrame) -> alt.Chart:
             x1=1, x2=1, y1=1, y2=0,
         ),
     ).encode(
-        x=alt.X("minute:T", title=None, axis=alt.Axis(format="%H:%M")),
+        x=alt.X("fifteen_sec_window:T", title=None, axis=alt.Axis(format="%H:%M:%S")),
         y=alt.Y("tx_count:Q", title="Transactions"),
-        tooltip=[alt.Tooltip("minute:T", title="Time", format="%H:%M"),
+        tooltip=[alt.Tooltip("fifteen_sec_window:T", title="Time", format="%H:%M:%S"),
                  alt.Tooltip("tx_count:Q", title="Transactions", format=",")],
     )
     return area.properties(height=230)
@@ -303,13 +328,13 @@ def chart_alerts(df: pd.DataFrame) -> alt.Chart:
     if df.empty:
         return alt.Chart(pd.DataFrame()).properties(height=230)
     return (
-        alt.Chart(df, title="ML fraud alerts per minute")
+        alt.Chart(df, title="ML fraud alerts per fifteen second window")
         .mark_line(strokeWidth=2, point=alt.OverlayMarkDef(size=40, color=CH_YELLOW),
                    color=CH_YELLOW)
         .encode(
-            x=alt.X("minute:T", title=None, axis=alt.Axis(format="%H:%M")),
+            x=alt.X("fifteen_sec_window:T", title=None, axis=alt.Axis(format="%H:%M:%S")),
             y=alt.Y("ml_alerts:Q", title="Alerts"),
-            tooltip=[alt.Tooltip("minute:T", title="Time", format="%H:%M"),
+            tooltip=[alt.Tooltip("fifteen_sec_window:T", title="Time", format="%H:%M:%S"),
                      alt.Tooltip("ml_alerts:Q", title="ML Alerts")],
         )
         .properties(height=230)
@@ -424,18 +449,18 @@ def main():
                 unsafe_allow_html=True)
     col1, col2 = st.columns(2)
     with col1:
-        st.altair_chart(chart_tx(tx_df), use_container_width=True)
+        st.altair_chart(chart_tx(tx_df), width="stretch")
     with col2:
-        st.altair_chart(chart_alerts(alerts_df), use_container_width=True)
+        st.altair_chart(chart_alerts(alerts_df), width="stretch")
 
     # ── Charts row 2 ─────────────────────────────────────────────────────────
     st.markdown('<div class="section-header">Fraud breakdown — last hour</div>',
                 unsafe_allow_html=True)
     col3, col4 = st.columns(2)
     with col3:
-        st.altair_chart(chart_country(country_df), use_container_width=True)
+        st.altair_chart(chart_country(country_df), width="stretch")
     with col4:
-        st.altair_chart(chart_severity(severity_df), use_container_width=True)
+        st.altair_chart(chart_severity(severity_df), width="stretch")
 
     # ── Alert tables ─────────────────────────────────────────────────────────
     st.markdown('<div class="section-header">Recent ML alerts — IsolationForest UDF</div>',
@@ -450,7 +475,7 @@ def main():
                      "ts": lambda v: str(v)[:19]})
             .set_properties(**{"background-color": CH_CARD, "color": CH_TEXT})
         )
-        st.dataframe(styled, use_container_width=True, hide_index=True)
+        st.dataframe(styled, width="stretch", hide_index=True)
 
     # Footer
     st.markdown(f"""
